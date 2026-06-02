@@ -2,6 +2,9 @@
 
 Knowledge Graph für Java-Codebases. Parst Java-Quellcode, schreibt strukturierten Property-Graph nach Neo4j. Agenten können darin navigieren, fachliche Dokumentation wird direkt eingebunden.
 
+![Java](https://img.shields.io/badge/Java-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)
+
+
 ## Ziel
 
 ```
@@ -11,7 +14,7 @@ Java Source + Javadoc + ADR/Markdown
         ↓  Neo4j Java Driver
      Neo4j DB
         ↓  Cypher Queries
-  Agent / MCP Layer
+     Shell / Tool
 ```
 
 - **LLM-frei** beim Graph-Aufbau (statische Analyse)
@@ -27,10 +30,11 @@ Java Source + Javadoc + ADR/Markdown
 | Label      | Properties                                   |
 |------------|----------------------------------------------|
 | `Package`  | `name`, `fqn`                                |
-| `Class`    | `name`, `fqn`, `kind` (class/interface/enum), `javadoc`, `file` |
-| `Method`   | `name`, `signature`, `returnType`, `javadoc`, `loc` |
-| `Field`    | `name`, `type`, `javadoc`                    |
-| `Document` | `title`, `kind` (ADR/Wiki/Readme), `path`, `content` |
+| `Class`    | `name`, `fqn`, `kind` (class/interface/enum), `visibility`, `isAbstract`, `isDeprecated`, `annotations[]`, `startLine`, `endLine`, `javadoc`, `file` |
+| `Method`   | `name`, `fqn`, `signature`, `returnType`, `visibility`, `isStatic`, `isAbstract`, `isFinal`, `isDeprecated`, `isConstructor`, `annotations[]`, `javadoc`, `startLine`, `endLine`, `loc` |
+| `Field`    | `name`, `fqn`, `type`, `visibility`, `isStatic`, `isFinal`, `isDeprecated`, `annotations[]`, `startLine`, `endLine`, `javadoc` |
+| `Document`   | `title`, `kind` (ADR/Wiki/Readme), `path`, `content` |
+| `SourceFile` | `fqn`, `path`, `hash` (SHA-256) — Incremental-State, intern verwaltet |
 
 ### Kanten
 
@@ -40,6 +44,9 @@ Java Source + Javadoc + ADR/Markdown
 | `HAS_METHOD`    | Class → Method       | Klasse hat Methode      |
 | `HAS_FIELD`     | Class → Field        | Klasse hat Feld         |
 | `CALLS`         | Method → Method      | Methodenaufruf          |
+| `OVERRIDES`     | Method → Method      | Überschreibt Methode (`@Override`) |
+| `THROWS`        | Method → Class       | Deklarierte Exception   |
+| `INSTANTIATES`  | Method → Class       | `new ClassName()` im Methodenrumpf |
 | `INHERITS_FROM` | Class → Class        | Vererbung               |
 | `IMPLEMENTS`    | Class → Class        | Interface-Implementierung|
 | `DEPENDS_ON`    | Class → Class        | Feldtyp-Abhängigkeit    |
@@ -53,11 +60,17 @@ Java Source + Javadoc + ADR/Markdown
 lumesh-graph/
 ├── src/main/java/dev/lumesh/graph/
 │   ├── Main.java                    ← CLI-Einstieg (picocli)
+│   ├── ConsoleOutput.java           ← Fortschrittsausgabe
 │   ├── cli/
 │   │   ├── AnalyzeCommand.java      ← 'analyze': Quellcode → Graph
 │   │   ├── DocCommand.java          ← 'doc': Markdown/ADR → Graph
 │   │   └── QueryCommand.java        ← 'query': Cypher-Abfrage
+│   ├── model/
+│   │   ├── GraphNode.java           ← Node-Datenklasse
+│   │   └── GraphEdge.java           ← Edge-Datenklasse
 │   ├── parser/
+│   │   ├── GraphSink.java           ← Schreib-Interface
+│   │   ├── InMemoryGraphSink.java   ← In-Memory-Puffer (für Merge)
 │   │   ├── JavaSourceParser.java    ← JavaParser AST-Extraktion
 │   │   └── GraphMerger.java         ← Core/Customer-Merge
 │   └── neo4j/
@@ -111,8 +124,10 @@ analyze --source <pfad> [--core <pfad>] [--uri <uri>] [-u <user>] [-p <pw>] [--c
 | `--uri <uri>` | — | `bolt://localhost:7687` | Neo4j Bolt URI |
 | `-u, --user <user>` | — | `neo4j` | Neo4j Benutzer |
 | `-p, --password <pw>` | — | `password` | Neo4j Passwort |
-| `--clear` | — | — | Gesamten Graph vor Import leeren |
+| `--clear` | — | — | Gesamten Graph vor Import leeren (inkl. Incremental-State) |
 | `--exclude-tests` | — | — | Testklassen überspringen (`*Test.java`, `test/`-Verzeichnisse) |
+
+Folgeläufe ohne `--clear` sind inkrementell: nur Dateien mit geändertem SHA-256-Hash werden neu geparst, unveränderte Dateien übersprungen.
 
 Alle optionalen Flags sind frei kombinierbar. Beispiele:
 
@@ -212,19 +227,53 @@ RETURN m.name, called.name
 // Dokumentation zu einer Klasse
 MATCH (d:Document)-[:DOCUMENTS]->(c:Class {name: 'MyClass'})
 RETURN d.title, d.content
+
+// Alle Spring-Services (und Stereotypen)
+MATCH (c:Class)
+WHERE ANY(a IN c.annotations WHERE a IN ['Service', 'Component', 'Repository', 'RestController', 'Controller'])
+RETURN c.fqn, c.annotations ORDER BY c.name
+
+// Alle public Entry-Points (nicht statisch)
+MATCH (c:Class)-[:HAS_METHOD]->(m:Method)
+WHERE m.visibility = 'public' AND NOT m.isStatic
+RETURN c.name, m.signature ORDER BY c.name
+
+// Welche Methoden überschreiben eine Basis-Methode?
+MATCH (m:Method)-[:OVERRIDES]->(base:Method)
+RETURN m.fqn, base.fqn
+
+// Welche Methoden werfen eine bestimmte Exception?
+MATCH (m:Method)-[:THROWS]->(e:Class)
+WHERE e.name = 'IOException'
+RETURN m.fqn
+
+// REST-Endpunkte finden (Annotation-Wert enthält Pfad)
+MATCH (c:Class)-[:HAS_METHOD]->(m:Method)
+WHERE ANY(a IN m.annotations WHERE a STARTS WITH 'GetMapping' OR a STARTS WITH 'PostMapping' OR a STARTS WITH 'RequestMapping')
+RETURN c.name, m.name, m.annotations
+
+// Deprecated-Code finden
+MATCH (n) WHERE n.isDeprecated = true
+RETURN labels(n)[0] AS typ, n.fqn ORDER BY typ
+
+// Alle Konstruktoren einer Klasse
+MATCH (c:Class {name: 'MyService'})-[:HAS_METHOD]->(m:Method)
+WHERE m.isConstructor = true
+RETURN m.signature, m.visibility
+
+// Was instanziiert eine Klasse direkt?
+MATCH (c:Class {name: 'MyService'})-[:HAS_METHOD]->(m:Method)-[:INSTANTIATES]->(created:Class)
+RETURN m.name, created.name
+
+// Quellcode-Position einer Methode
+MATCH (c:Class {name: 'MyService'})-[:HAS_METHOD]->(m:Method {name: 'doSomething'})
+RETURN c.file, m.startLine, m.endLine
+
+// Inner Classes einer Klasse
+MATCH (outer:Class)<-[:CONTAINS]-(pkg:Package)
+MATCH (inner:Class) WHERE inner.fqn STARTS WITH outer.fqn + '.'
+RETURN outer.name, collect(inner.name)
 ```
-
----
-
-## Roadmap
-
-| Phase | Inhalt | Status |
-|-------|--------|--------|
-| **A** | Gradle-Setup, JavaParser → Neo4j, CLI | ✅ |
-| **B** | Javadoc-Extraktion, Markdown/ADR-Import | 🔲 |
-| **C** | Fraunhofer CPG: CFG + DFG für tiefere Analyse | 🔲 |
-| **D** | MCP-Server: Agent-Tools auf Graph-Basis | 🔲 |
-| **E** | Inkrementelles Update (nur geänderte Dateien) | 🔲 |
 
 ---
 
@@ -232,9 +281,9 @@ RETURN d.title, d.content
 
 | Komponente | Bibliothek | Version |
 |------------|-----------|---------|
-| AST-Parser | JavaParser | 3.26.x |
+| AST-Parser | JavaParser | 3.28.1 |
 | Graph DB | Neo4j Community | 5.x |
-| Java Driver | neo4j-java-driver | 5.x |
-| CLI | picocli | 4.7.x |
-| Build | Gradle + Shadow | 8.x |
-| Java | OpenJDK | 17+ |
+| Java Driver | neo4j-java-driver | 6.1.0 |
+| CLI | picocli | 4.7.7 |
+| Build | Gradle + Shadow | 9.x |
+| Java | OpenJDK | 25 |

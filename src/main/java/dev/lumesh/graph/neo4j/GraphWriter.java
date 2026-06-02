@@ -50,10 +50,49 @@ public class GraphWriter implements GraphSink, AutoCloseable {
     /** Create indexes for fast lookup by fqn and name. */
     public void ensureIndexes() {
         try (Session session = driver.session()) {
-            for (String label : new String[]{"Package", "Class", "Method", "Field", "Document"}) {
+            for (String label : new String[]{"Package", "Class", "Method", "Field", "Document", "SourceFile"}) {
                 session.run("CREATE INDEX %s_fqn IF NOT EXISTS FOR (n:%s) ON (n.fqn)".formatted(label, label));
+            }
+            for (String label : new String[]{"Package", "Class", "Method", "Field", "Document"}) {
                 session.run("CREATE INDEX %s_name IF NOT EXISTS FOR (n:%s) ON (n.name)".formatted(label, label));
             }
+        }
+    }
+
+    @Override
+    public boolean isFileUnchanged(String filePath, String hash) {
+        try (Session session = driver.session()) {
+            var result = session.run(
+                "MATCH (f:SourceFile {fqn: $fqn}) RETURN f.hash AS hash",
+                Values.parameters("fqn", filePath)
+            );
+            if (result.hasNext()) {
+                return hash.equals(result.next().get("hash").asString());
+            }
+            return false;
+        }
+    }
+
+    @Override
+    public void purgeFile(String filePath) {
+        try (Session session = driver.session()) {
+            session.run(
+                "MATCH (c:Class {file: $file}) " +
+                "OPTIONAL MATCH (c)-[:HAS_METHOD]->(m:Method) " +
+                "OPTIONAL MATCH (c)-[:HAS_FIELD]->(f:Field) " +
+                "DETACH DELETE c, m, f",
+                Values.parameters("file", filePath)
+            );
+        }
+    }
+
+    @Override
+    public void recordFile(String filePath, String hash) {
+        try (Session session = driver.session()) {
+            session.run(
+                "MERGE (f:SourceFile {fqn: $fqn}) SET f.path = $path, f.hash = $hash",
+                Values.parameters("fqn", filePath, "path", filePath, "hash", hash)
+            );
         }
     }
 
