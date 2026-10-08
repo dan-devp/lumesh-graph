@@ -128,7 +128,7 @@ public class JavaSourceParser {
                 });
             }
 
-            // Felder (nur direkte, keine verschachtelten Klassen)
+            // Fields (direct members only, nested types are handled on their own)
             typedDecl.getFields().forEach(field -> {
                 String fieldVisibility = field.getAccessSpecifier().asString();
                 boolean fieldStatic = field.isStatic();
@@ -160,7 +160,7 @@ public class JavaSourceParser {
                 });
             });
 
-            // Methoden (nur direkte, keine verschachtelten Klassen)
+            // Methods (direct members only, nested types are handled on their own)
             typedDecl.getMethods().forEach(method -> {
                 String sig = buildSignature(method);
                 String methodFqn = fqn + "#" + sig;
@@ -215,12 +215,12 @@ public class JavaSourceParser {
                         String calledFqn = call.resolve().getQualifiedSignature();
                         writer.writeEdge(methodFqn, calledFqn, "CALLS");
                     } catch (Exception ignored) {
-                        // Symbol nicht auflösbar: externer Typ oder fehlendes Classpath
+                        // Symbol not resolvable: external type or missing classpath
                     }
                 });
             });
 
-            // Konstruktoren
+            // Constructors
             typedDecl.getConstructors().forEach(ctor -> {
                 String sig = buildConstructorSignature(ctor);
                 String ctorFqn = fqn + "#" + sig;
@@ -264,14 +264,14 @@ public class JavaSourceParser {
                         String calledFqn = call.resolve().getQualifiedSignature();
                         writer.writeEdge(ctorFqn, calledFqn, "CALLS");
                     } catch (Exception ignored) {
-                        // Symbol nicht auflösbar
+                        // Symbol not resolvable
                     }
                 });
             });
         });
     }
 
-    /** Rekursiv korrekte FQN für inner classes: pkg.Outer.Inner */
+    /** Builds the FQN recursively so nested types become pkg.Outer.Inner. */
     private String buildFqn(TypeDeclaration<?> type, String packageName) {
         return type.findAncestor(TypeDeclaration.class)
             .map(parent -> buildFqn((TypeDeclaration<?>) parent, packageName) + "." + type.getNameAsString())
@@ -308,7 +308,7 @@ public class JavaSourceParser {
         return path.contains("/test/") || name.endsWith("Test.java") || name.endsWith("Tests.java") || name.endsWith("IT.java");
     }
 
-    /** Best-effort: Volltypname wenn im selben Package, sonst Kurzname als Fallback. */
+    /** Best effort: keeps qualified names as-is, otherwise assumes the type lives in the current package. */
     private String resolveTypeFqn(String typeName, String currentPackage) {
         if (typeName.contains(".")) return typeName;
         return currentPackage + "." + typeName;

@@ -28,13 +28,13 @@ public class DocCommand implements Callable<Integer> {
     @Option(names = {"--kind"}, defaultValue = "Doc", description = "Kind label for these documents (e.g. ADR, Wiki, Readme).")
     private String kind;
 
-    @Option(names = {"--uri"}, defaultValue = "bolt://localhost:7687")
+    @Option(names = {"--uri"}, defaultValue = "bolt://localhost:7687", description = "Neo4j Bolt URI.")
     private String neo4jUri;
 
-    @Option(names = {"-u", "--user"}, defaultValue = "neo4j")
+    @Option(names = {"-u", "--user"}, defaultValue = "neo4j", description = "Neo4j user.")
     private String neo4jUser;
 
-    @Option(names = {"-p", "--password"}, defaultValue = "password")
+    @Option(names = {"-p", "--password"}, defaultValue = "password", description = "Neo4j password.")
     private String neo4jPassword;
 
     @Override
